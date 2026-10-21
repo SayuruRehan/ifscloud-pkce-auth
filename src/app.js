@@ -15,6 +15,7 @@ import { renderHome } from './views.js';
 
 const PENDING_LOGIN_TTL_MS = 10 * 60 * 1000;
 const MAX_TRACE_ENTRIES = 40;
+const MAX_HISTORY_ENTRIES = 20;
 
 export const app = express();
 app.disable('x-powered-by');
@@ -36,6 +37,12 @@ function trace(req, step, details = {}) {
   req.session.trace = entries.slice(-MAX_TRACE_ENTRIES);
 }
 
+// One message for the next page view, shown inside the block it belongs to
+// ('login', 'session' or 'probe').
+function flash(req, scope, message) {
+  req.session.flash = { scope, message };
+}
+
 function shorten(value, keep = 8) {
   if (!value) return value;
   return value.length <= keep ? value : `${value.slice(0, keep)}… (${value.length} chars)`;
@@ -54,9 +61,11 @@ function storeTokens(req, tokenResponse) {
       token_type: tokenResponse.token_type,
       scope: tokenResponse.scope,
       expires_at: tokenResponse.expires_in ? now + tokenResponse.expires_in * 1000 : undefined,
+      expires_in: tokenResponse.expires_in,
       refresh_expires_at: tokenResponse.refresh_expires_in
         ? now + tokenResponse.refresh_expires_in * 1000
         : previous.refresh_expires_at,
+      refresh_expires_in: tokenResponse.refresh_expires_in ?? previous.refresh_expires_in,
     },
   };
 }
@@ -81,12 +90,13 @@ app.get('/', async (req, res, next) => {
   }
 
   let discovery;
-  let error = req.session.flashError;
-  delete req.session.flashError;
+  let discoveryError;
+  const flashed = req.session.flash;
+  delete req.session.flash;
   try {
     discovery = await discover();
   } catch (err) {
-    error = error ?? err.message;
+    discoveryError = err.message;
   }
 
   let accessToken;
@@ -102,7 +112,9 @@ app.get('/', async (req, res, next) => {
       accessToken,
       trace: req.session.trace ?? [],
       probe: req.session.probe,
-      error,
+      history: req.session.history ?? [],
+      flash: flashed,
+      discoveryError,
     }),
   );
 });
@@ -210,11 +222,13 @@ app.get('/callback', async (req, res) => {
       nonce: 'matches',
     });
 
-    // New identity: rotate the session id (avoids fixation) but keep the trace.
-    const keptTrace = req.session.trace;
+    // New identity: rotate the session id (avoids fixation) but keep the trace
+    // and the call history, so calls made as different users can be compared.
+    const { trace: keptTrace, history: keptHistory } = req.session;
     req.session.regenerate((err) => {
       if (err) return res.status(500).send(`Could not start session: ${err.message}`);
       req.session.trace = keptTrace;
+      req.session.history = keptHistory;
       storeTokens(req, tokenResponse);
       req.session.auth.idClaims = idClaims;
       req.session.auth.signedInAt = new Date().toISOString();
@@ -222,7 +236,7 @@ app.get('/callback', async (req, res) => {
     });
   } catch (err) {
     trace(req, 'Login failed', { error: err.message });
-    req.session.flashError = err.message;
+    flash(req, 'login', err.message);
     req.session.save(() => res.redirect('/'));
   }
 });
@@ -247,7 +261,7 @@ app.post('/refresh', async (req, res) => {
     });
   } catch (err) {
     trace(req, 'Refresh failed', { error: err.message });
-    req.session.flashError = err.message;
+    flash(req, 'session', err.message);
   }
   req.session.save(() => res.redirect('/'));
 });
@@ -279,6 +293,10 @@ app.post('/probe', async (req, res) => {
       contentType: apiRes.headers.get('content-type'),
       body: body.length > 6000 ? `${body.slice(0, 6000)}\n… (${body.length} chars total, truncated)` : body,
     };
+    req.session.history = [
+      ...(req.session.history ?? []),
+      { at: new Date().toISOString(), user: req.session.probe.user, path, status: apiRes.status, statusText: apiRes.statusText, ms: req.session.probe.ms },
+    ].slice(-MAX_HISTORY_ENTRIES);
     trace(req, 'IFS API call', { url: target.toString(), status: `${apiRes.status} ${apiRes.statusText}` });
   } catch (err) {
     req.session.probe = { path, error: err.message };
@@ -302,15 +320,20 @@ app.post('/logout-local', (req, res) => {
   req.session.destroy(() => res.redirect('/'));
 });
 
+app.post('/clear-history', (req, res) => {
+  req.session.history = [];
+  req.session.save(() => res.redirect('/'));
+});
+
 app.post('/clear-trace', (req, res) => {
   req.session.trace = [];
-  req.session.save(() => res.redirect('/'));
+  req.session.save(() => res.redirect('/#trace'));
 });
 
 app.use((err, req, res, _next) => {
   console.error(err);
   if (req.session) {
-    req.session.flashError = err.message;
+    flash(req, req.session.auth ? 'session' : 'login', err.message);
     return req.session.save(() => res.redirect('/'));
   }
   res.status(500).send('Internal error');

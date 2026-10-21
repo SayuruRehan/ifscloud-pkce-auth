@@ -29,8 +29,11 @@ service account to fake different permissions.
 7. **Switch user**: ends the IAM SSO session (logout with `id_token_hint` and a `state`),
    comes back to `/` and starts a fresh login. See *Why switching user logs out first*.
 
-Every step is written to a **Flow trace** panel on the page, so you can see exactly
-what was sent and what came back.
+The page has four working blocks: **Call IFS as <user>**, **Session** (live token
+countdowns, subject, signature), **Calls by user** and **ID token claims**. **Calls by user**
+keeps every call with the user who made it, across user switches, so you can compare 200
+against 403 side by side. A **Flow trace** records each step of the sign-in, so you can see
+exactly what was sent and what came back. Earlier sign-ins fold into one row.
 
 Tokens stay in the server-side in-memory session. The browser only gets an
 `httpOnly` session cookie.
@@ -126,7 +129,8 @@ to another origin.
 src/pkce.js     verifier / S256 challenge / state & nonce
 src/oidc.js     discovery, authorize URL, token exchange & refresh, token validation, logout URL
 src/app.js      Express routes (/login, /callback, /refresh, /probe, /switch-user, /logout)
-src/views.js    server-rendered HTML
+src/views.js    server-rendered HTML and CSS (light and dark, phone layout)
 src/server.js   starts the server
-test/           unit + end-to-end tests with a mock IAM
+test/           unit + end-to-end tests
+test/support/   mock IFS IAM (Keycloak-style) and fake IFS projection used by the tests
 ```
