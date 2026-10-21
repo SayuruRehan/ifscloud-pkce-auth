@@ -17,8 +17,7 @@ service account to fake different permissions.
    and checks that the IAM advertises `S256`.
 2. **Authorize**: generates a fresh `code_verifier` (43 chars), its S256 `code_challenge`,
    `state` and `nonce`. It then redirects the browser to the IAM authorization endpoint.
-   You can also pass a `login_hint` and `prompt=login`, which lets you switch IFS users
-   even while an IAM SSO session is active.
+   You can also pass a `login_hint` to pre-fill the IFS user id.
 3. **Callback**: checks `state` and how old the login transaction is, then exchanges
    `code` + `code_verifier` at the token endpoint. No client secret is sent for a public client.
 4. **Validate**: verifies the ID token's signature against the realm JWKS, plus `iss`,
@@ -27,6 +26,8 @@ service account to fake different permissions.
    Sign in as different users and repeat the same call to compare `200` against `403`.
 6. **Refresh / logout**: refreshes tokens and rejects the result if the subject changes.
    Logout is RP-initiated through the IAM `end_session_endpoint`.
+7. **Switch user**: ends the IAM SSO session (logout with `id_token_hint` and a `state`),
+   comes back to `/` and starts a fresh login. See *Why switching user logs out first*.
 
 Every step is written to a **Flow trace** panel on the page, so you can see exactly
 what was sent and what came back.
@@ -74,7 +75,7 @@ NODE_EXTRA_CA_CERTS=/path/to/company-ca.pem npm start
 
 1. Sign in as a user who has the permission set needed for, say, `CustomerHandling`.
    Call the probe path and expect `200`.
-2. Click **Sign in as a different user** and log in as a user without that permission set.
+2. Click **Sign in as a different user**, optionally entering the IFS user id, and log in as a user without that permission set.
    Repeat the call and expect `403`, or an empty result if row-level security applies.
 3. Click **Refresh tokens** and confirm that the identity stays the same and whether
    the refresh token rotates. The investigation needs this answer before it allows
@@ -82,6 +83,21 @@ NODE_EXTRA_CA_CERTS=/path/to/company-ca.pem npm start
 4. Note what the trace shows for `sub`, `preferred_username` and the access token's
    claims (for example `upn`). These are the candidates for the "expected subject" check
    that Mahara needs to run before each test run.
+
+## Why switching user logs out first
+
+IFS IAM is built on Keycloak. While an IAM SSO session exists, a login request with
+`prompt=login` is treated as **re-authentication of the user who is already signed in**.
+The password you type is checked against that user, whatever you enter as the username,
+so another user's correct password fails with *Invalid password*.
+
+**Sign in as a different user** therefore ends the IAM session first. The app sends the
+browser to the end-session endpoint with `id_token_hint`, `post_logout_redirect_uri`
+and a random `state`. IAM returns to `/` with that `state`, and the app starts a fresh
+PKCE login. This uses the `http://localhost:3000/` redirect URI already registered for logout.
+
+The Mahara desktop will need the same rule: selecting a different IFS user for a run
+must end the IAM browser session, or use a separate browser profile, before logging in.
 
 ## Tests
 
@@ -91,7 +107,8 @@ npm test
 
 The tests run the whole flow against a mock Keycloak-style IAM and a fake IFS projection:
 PKCE parameters, verifier check, ID token validation, permission differences between
-users, state mismatch, and refusing to send the token to another origin.
+users, switching user through IAM logout, state mismatch, and refusing to send the token
+to another origin.
 
 ## Differences from the planned desktop implementation
 
@@ -108,7 +125,7 @@ users, state mismatch, and refusing to send the token to another origin.
 ```
 src/pkce.js     verifier / S256 challenge / state & nonce
 src/oidc.js     discovery, authorize URL, token exchange & refresh, token validation, logout URL
-src/app.js      Express routes (/login, /callback, /refresh, /probe, /logout)
+src/app.js      Express routes (/login, /callback, /refresh, /probe, /switch-user, /logout)
 src/views.js    server-rendered HTML
 src/server.js   starts the server
 test/           unit + end-to-end tests with a mock IAM

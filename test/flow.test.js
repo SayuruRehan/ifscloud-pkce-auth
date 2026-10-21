@@ -12,7 +12,7 @@ let idpUrl;
 let appServer;
 let appUrl;
 const codes = new Map();
-const issued = { tokenRequests: [] };
+const issued = { tokenRequests: [], logouts: [] };
 
 async function startMockIam() {
   const { privateKey, publicKey } = await generateKeyPair('RS256');
@@ -38,6 +38,15 @@ async function startMockIam() {
       });
     }
     if (url.pathname === `${base}/protocol/openid-connect/certs`) return json(200, { keys: [jwk] });
+
+    if (url.pathname === `${base}/protocol/openid-connect/logout`) {
+      const p = url.searchParams;
+      issued.logouts.push(Object.fromEntries(p));
+      const back = new URL(p.get('post_logout_redirect_uri'));
+      if (p.get('state')) back.searchParams.set('state', p.get('state'));
+      res.writeHead(302, { location: back.toString() });
+      return res.end();
+    }
 
     if (url.pathname === `${base}/protocol/openid-connect/auth`) {
       // Pretend the user typed their credentials; login_hint picks the user.
@@ -115,14 +124,20 @@ const form = (data) => ({
   body: new URLSearchParams(data),
 });
 
-async function signIn(go, user) {
-  const login = await go(`${appUrl}/login`, form({ login_hint: user, force_login: 'on' }));
+// Replays a redirect that targets the fixed REDIRECT_URI / logout port against the test server.
+const local = (location) => {
+  const u = new URL(location);
+  return `${appUrl}${u.pathname}${u.search}`;
+};
+
+async function completeLogin(go, login) {
   assert.equal(login.status, 302);
-  const authorize = new URL(login.headers.get('location'));
-  const atIam = await fetch(authorize, { redirect: 'manual' });
-  const callback = new URL(atIam.headers.get('location'));
-  // REDIRECT_URI points at a fixed port; replay the callback against the test server.
-  return go(`${appUrl}${callback.pathname}${callback.search}`);
+  const atIam = await fetch(new URL(login.headers.get('location')), { redirect: 'manual' });
+  return go(local(atIam.headers.get('location')));
+}
+
+async function signIn(go, user) {
+  return completeLogin(go, await go(`${appUrl}/login`, form({ login_hint: user })));
 }
 
 before(async () => {
@@ -156,6 +171,32 @@ test('authorize request carries PKCE, state, nonce and openid scope', async () =
   assert.equal(p.get('scope'), 'openid microprofile-jwt');
   assert.equal(p.get('login_hint'), 'ALAIN');
   assert.equal(p.get('prompt'), null);
+});
+
+test('switching user ends the IAM session first, then logs in the new user', async () => {
+  const go = browser();
+  await signIn(go, 'ALAIN');
+  const switchRes = await go(`${appUrl}/switch-user`, form({ login_hint: 'BOB' }));
+  const logout = new URL(switchRes.headers.get('location'));
+  assert.match(logout.pathname, /\/protocol\/openid-connect\/logout$/);
+  assert.ok(logout.searchParams.get('id_token_hint'), 'logout must carry id_token_hint');
+  assert.ok(logout.searchParams.get('state'));
+
+  // IAM logs out and returns to post_logout_redirect_uri with our state; the app starts the new login.
+  const atIam = await fetch(logout, { redirect: 'manual' });
+  const login = await go(local(atIam.headers.get('location')));
+  assert.equal(new URL(login.headers.get('location')).searchParams.get('login_hint'), 'BOB');
+  await completeLogin(go, login);
+  const home = await (await go(`${appUrl}/`)).text();
+  assert.match(home, /Signed in as <span class="user">bob<\/span>/);
+});
+
+test('a returning logout with a foreign state does not start a login', async () => {
+  const go = browser();
+  await signIn(go, 'ALAIN');
+  await go(`${appUrl}/switch-user`, form({}));
+  const res = await go(`${appUrl}/?state=forged`);
+  assert.equal(res.status, 200);
 });
 
 test('full sign-in: code + verifier exchanged, ID token validated, user shown', async () => {

@@ -60,9 +60,11 @@ function renderSignIn() {
       <label>Login hint (optional IFS user id)
         <input name="login_hint" placeholder="e.g. ALAIN" autocomplete="off">
       </label>
-      <label class="check"><input type="checkbox" name="force_login" checked>
-        Force the login page (<code>prompt=login</code>), so an existing IAM SSO session doesn't sign you straight back in as the previous user</label>
       <button type="submit">Sign in with PKCE</button>
+    </form>
+    <p class="muted">If IFS signs you straight back in as the wrong user, it still has an IAM session from earlier.</p>
+    <form method="post" action="/switch-user" class="row">
+      <button type="submit" class="secondary small">End the IFS session and sign in again</button>
     </form>
   </section>`;
 }
@@ -83,7 +85,10 @@ function renderSession(auth, accessToken, config, probe) {
     })}
     <div class="row">
       <form method="post" action="/refresh"><button ${t.refresh_token ? '' : 'disabled'}>Refresh tokens</button></form>
-      <form method="post" action="/login"><input type="hidden" name="force_login" value="on"><button class="secondary">Sign in as a different user</button></form>
+      <form method="post" action="/switch-user" class="row">
+        <input name="login_hint" placeholder="IFS user id (optional)" autocomplete="off" aria-label="IFS user id for the new login">
+        <button class="secondary">Sign in as a different user</button>
+      </form>
       <form method="post" action="/logout"><button class="secondary">Log out (IAM + local)</button></form>
       <form method="post" action="/logout-local"><button class="secondary">Forget tokens locally</button></form>
     </div>
@@ -198,7 +203,6 @@ export function renderHome({ config, discovery, auth, accessToken, trace, probe,
   .grow { flex:1; min-width:240px; }
   .prefix { color:var(--muted); font-size:13px; }
   label { display:grid; gap:4px; font-size:14px; }
-  label.check { display:flex; gap:8px; align-items:flex-start; }
   input:not([type=checkbox]) { padding:8px 10px; border:1px solid var(--line); border-radius:6px; background:var(--bg); color:var(--fg); font:inherit; }
   button { padding:8px 14px; border-radius:6px; border:1px solid var(--accent); background:var(--accent); color:#fff; font:inherit; cursor:pointer; }
   button.secondary { background:transparent; color:var(--accent); }

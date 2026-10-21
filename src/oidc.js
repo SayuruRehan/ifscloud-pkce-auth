@@ -22,7 +22,7 @@ export async function discover() {
   return discoveryCache;
 }
 
-export function buildAuthorizeUrl(metadata, { state, nonce, codeChallenge, loginHint, forceLogin }) {
+export function buildAuthorizeUrl(metadata, { state, nonce, codeChallenge, loginHint }) {
   const url = new URL(metadata.authorization_endpoint);
   const params = {
     client_id: config.clientId,
@@ -35,9 +35,6 @@ export function buildAuthorizeUrl(metadata, { state, nonce, codeChallenge, login
     code_challenge_method: 'S256',
   };
   if (loginHint) params.login_hint = loginHint;
-  // prompt=login makes IAM re-authenticate even when an SSO session already
-  // exists in the browser, which is what lets you switch between IFS users.
-  if (forceLogin) params.prompt = 'login';
   for (const [key, value] of Object.entries(params)) url.searchParams.set(key, value);
   return url;
 }
@@ -111,11 +108,13 @@ export async function inspectAccessToken(metadata, accessToken) {
   return result;
 }
 
-export function buildLogoutUrl(metadata, idToken) {
+// IAM echoes `state` back to post_logout_redirect_uri, which lets us chain a new login.
+export function buildLogoutUrl(metadata, idToken, state) {
   if (!metadata.end_session_endpoint) return null;
   const url = new URL(metadata.end_session_endpoint);
   url.searchParams.set('client_id', config.clientId);
   url.searchParams.set('post_logout_redirect_uri', config.postLogoutRedirectUri);
   if (idToken) url.searchParams.set('id_token_hint', idToken);
+  if (state) url.searchParams.set('state', state);
   return url;
 }

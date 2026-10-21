@@ -71,7 +71,15 @@ function tokenSummary(tokenResponse) {
   };
 }
 
-app.get('/', async (req, res) => {
+app.get('/', async (req, res, next) => {
+  // Back from the IAM logout of a user switch: start the new login straight away.
+  const pendingSwitch = req.session.switchUser;
+  if (pendingSwitch && req.query.state === pendingSwitch.state) {
+    delete req.session.switchUser;
+    trace(req, 'IAM session ended', { previous_user: pendingSwitch.previousUser });
+    return startLogin(req, res, next, { loginHint: pendingSwitch.loginHint });
+  }
+
   let discovery;
   let error = req.session.flashError;
   delete req.session.flashError;
@@ -100,18 +108,16 @@ app.get('/', async (req, res) => {
 });
 
 // Step 1: create verifier/challenge/state/nonce and send the browser to IFS IAM.
-app.post('/login', async (req, res, next) => {
+async function startLogin(req, res, next, { loginHint }) {
   try {
     const { metadata, url: discoveryUrl } = await discover();
     const codeVerifier = createCodeVerifier();
     const codeChallenge = createCodeChallenge(codeVerifier);
     const state = randomToken();
     const nonce = randomToken();
-    const loginHint = req.body.login_hint?.trim() || undefined;
-    const forceLogin = req.body.force_login === 'on';
 
     req.session.pending = { state, nonce, codeVerifier, createdAt: Date.now() };
-    const authorizeUrl = buildAuthorizeUrl(metadata, { state, nonce, codeChallenge, loginHint, forceLogin });
+    const authorizeUrl = buildAuthorizeUrl(metadata, { state, nonce, codeChallenge, loginHint });
 
     trace(req, 'Discovery', {
       discovery_url: discoveryUrl,
@@ -130,6 +136,33 @@ app.post('/login', async (req, res, next) => {
     trace(req, 'Redirect to authorization endpoint', { url: authorizeUrl.toString() });
 
     req.session.save((err) => (err ? next(err) : res.redirect(authorizeUrl.toString())));
+  } catch (err) {
+    next(err);
+  }
+}
+
+app.post('/login', (req, res, next) => startLogin(req, res, next, { loginHint: req.body.login_hint?.trim() || undefined }));
+
+// Switching user needs the IAM SSO session gone first: with an SSO session alive,
+// IAM treats a new login as re-authentication of the *current* user and checks the
+// typed password against that user, so a different user's password is "invalid".
+// Log out at IAM, come back to / with our state, then start a fresh login.
+app.post('/switch-user', async (req, res, next) => {
+  try {
+    const { metadata } = await discover();
+    const idToken = req.session.auth?.tokens?.id_token;
+    const state = randomToken();
+    req.session.switchUser = {
+      state,
+      loginHint: req.body.login_hint?.trim() || undefined,
+      previousUser: req.session.auth?.idClaims?.preferred_username,
+    };
+    delete req.session.auth;
+    delete req.session.probe;
+    const logoutUrl = buildLogoutUrl(metadata, idToken, state);
+    if (!logoutUrl) throw new Error('IAM does not advertise an end_session_endpoint, so the SSO session cannot be ended.');
+    trace(req, 'Switch user: redirect to IAM logout', { url: logoutUrl.toString().replace(/id_token_hint=[^&]+/, 'id_token_hint=…') });
+    req.session.save((err) => (err ? next(err) : res.redirect(logoutUrl.toString())));
   } catch (err) {
     next(err);
   }
