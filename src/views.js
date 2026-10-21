@@ -240,11 +240,11 @@ function historyCard(history) {
       history.length
         ? `<p class="summary">${summary}</p>
       <div class="table-wrap"><table>
-        <thead><tr><th>User</th><th>Request</th><th>Result</th><th class="num">Time</th><th class="num">At</th></tr></thead>
+        <thead><tr><th>User</th><th class="path">Request</th><th>Result</th><th class="num">Time</th><th class="num">At</th></tr></thead>
         <tbody>${shown
           .map(
             (h) => `<tr>
-              <td><span class="person">${avatar(h.user)}${esc(h.user)}</span></td>
+              <td><span class="person">${avatar(h.user)}<span>${esc(h.user)}<span class="mono small path-sub">${esc(shortPath(h.path))}</span></span></span></td>
               <td class="mono small path" title="${esc(h.path)}">${esc(shortPath(h.path))}</td>
               <td>${statusPill(h.status, h.statusText)}</td>
               <td class="num">${esc(h.ms)}<span class="unit"> ms</span></td>
@@ -576,6 +576,7 @@ th.num, td.num { text-align: right; padding-right: 0; padding-left: 10px; white-
 tbody tr:hover td { background: var(--raised); }
 .person { display: inline-flex; align-items: center; gap: 8px; white-space: nowrap; }
 .path { max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.path-sub { display: none; }
 
 /* trace */
 .trace { list-style: none; margin: 0; padding: 0; display: grid; }
@@ -616,7 +617,12 @@ tbody tr:hover td { background: var(--raised); }
   .trace .gist { grid-column: 2; }
   .trace details > .kv, .trace details > .empty { margin-left: 0; }
   .trace .earlier > details > .trace { margin-left: 0; }
-  .path { max-width: 140px; }
+  /* Phone: the request moves under the user, so the result never runs off the card. */
+  .path { display: none; }
+  .person { align-items: flex-start; }
+  .path-sub { display: block; color: var(--muted); max-width: 150px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  td { height: auto; padding-block: 10px; }
+  .calls th.num, .calls td.num { display: none; }
 }
 @media (prefers-reduced-motion: reduce) { .btn, .track span { transition: none; } }
 `;
